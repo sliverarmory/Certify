@@ -31,6 +31,7 @@ jobs:
 
     - name: MSBuild
       run: |
+        nuget.exe restore Certify.sln
         msbuild.exe Certify.sln /p:Configuration=Release /p:Platform="Any CPU" /p:OutputPath=compiled/
         Copy-Item -Path Certify\compiled\Certify.exe -Destination compiled\Certify.exe
 
