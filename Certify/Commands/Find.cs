@@ -255,7 +255,7 @@ namespace Certify.Commands
             Console.WriteLine($"    Schema Version                        : {template.SchemaVersion}");
             Console.WriteLine($"    Validity Period                       : {template.ValidityPeriod}");
             Console.WriteLine($"    Renewal Period                        : {template.RenewalPeriod}");
-            Console.WriteLine($"    msPKI-Certificates-Name-Flag          : {template.CertificateNameFlag}");
+            Console.WriteLine($"    msPKI-Certificate-Name-Flag          : {template.CertificateNameFlag}");
             Console.WriteLine($"    mspki-enrollment-flag                 : {template.EnrollmentFlag}");
             Console.WriteLine($"    Authorized Signatures Required        : {template.AuthorizedSignatures}");
             if (template.RaApplicationPolicies != null && template.RaApplicationPolicies.Any())
@@ -311,7 +311,6 @@ namespace Certify.Commands
             var ownerName = $"{GetUserSidString(ownerSid.ToString())}";
 
             var enrollmentPrincipals = new List<string>();
-            var autoEnrollmentPrincipals = new List<string>();
             var allExtendedRightsPrincipals = new List<string>();
             var fullControlPrincipals = new List<string>();
             var writeOwnerPrincipals = new List<string>();
@@ -331,15 +330,12 @@ namespace Certify.Commands
                 if ((rule.ActiveDirectoryRights & ActiveDirectoryRights.ExtendedRight) == ActiveDirectoryRights.ExtendedRight)
                 {
                     // 0e10c968-78fb-11d2-90d4-00c04f79dc55  ->  Certificates-Enrollment right
-                    // a05b8cc2-17bc-4802-a710-e7c15ab866a2  ->  Certificates-AutoEnrollment right
+                    // a05b8cc2-17bc-4802-a710-e7c15ab866a2  ->  Certificates-AutoEnrollment right (not acutally used during enrollment)
                     // 00000000-0000-0000-0000-000000000000  ->  all extended rights
                     switch ($"{rule.ObjectType}")
                     {
                         case "0e10c968-78fb-11d2-90d4-00c04f79dc55":
                             enrollmentPrincipals.Add(GetUserSidString(sid));
-                            break;
-                        case "a05b8cc2-17bc-4802-a710-e7c15ab866a2":
-                            autoEnrollmentPrincipals.Add(GetUserSidString(sid));
                             break;
                         case "00000000-0000-0000-0000-000000000000":
                             allExtendedRightsPrincipals.Add(GetUserSidString(sid));
@@ -375,16 +371,6 @@ namespace Certify.Commands
                     .ToList()
                     .ForEach(p => { sbEP.Append($"{p}\n                                      "); });
                 Console.WriteLine($"        Enrollment Rights           : {sbEP.ToString().Trim()}");
-            }
-
-            if (autoEnrollmentPrincipals.Count > 0)
-            {
-                var sbAEP = new StringBuilder();
-                autoEnrollmentPrincipals
-                    .OrderBy(p => p)
-                    .ToList()
-                    .ForEach(p => { sbAEP.Append($"{p}\n                                      "); });
-                Console.WriteLine($"        AutoEnrollment Rights       : {sbAEP.ToString().Trim()}");
             }
 
             if (allExtendedRightsPrincipals.Count > 0)
@@ -749,9 +735,22 @@ namespace Certify.Commands
                 template.ExtendedKeyUsage == null
                 || !template.ExtendedKeyUsage.Any() // No EKUs == Any Purpose
                 || template.ExtendedKeyUsage.Contains(CommonOids.AnyPurpose)
-                || template.ExtendedKeyUsage.Contains(CommonOids.CertificateRequestAgent);
+                || template.ExtendedKeyUsage.Contains(CommonOids.CertificateRequestAgent)
+                || (template.ApplicationPolicies != null && template.ApplicationPolicies.Contains(CommonOids.CertificateRequestAgentPolicy));
 
             if (lowPrivilegedUsersCanEnroll && hasDangerousEku) return true;
+
+
+            // Check 7) Does a certificate contain the  DISABLE_EMBED_SID_OID flag + DNS and DNS SAN flags
+            if ( template.CertificateNameFlag==null || template.EnrollmentFlag == null) {
+                return false;
+            }
+            
+            if((((msPKICertificateNameFlag)template.CertificateNameFlag).HasFlag(msPKICertificateNameFlag.SUBJECT_ALT_REQUIRE_DNS)
+                || ((msPKICertificateNameFlag)template.CertificateNameFlag).HasFlag(msPKICertificateNameFlag.SUBJECT_REQUIRE_DNS_AS_CN))
+                && ((msPKIEnrollmentFlag)template.EnrollmentFlag).HasFlag(msPKIEnrollmentFlag.NO_SECURITY_EXTENSION)) {
+                return true;
+            }
 
             return false;
         }

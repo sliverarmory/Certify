@@ -42,7 +42,7 @@ namespace Certify
         }
 
         // create a certificate request message from a given enterprise template name
-        private static CertificateRequest CreateCertRequestMessage(string templateName, bool machineContext = false, string subjectName = "", string altName = "")
+        private static CertificateRequest CreateCertRequestMessage(string templateName, bool machineContext = false, string subjectName = "", string altName = "", string sidExtension = "")
         {
             if (String.IsNullOrEmpty(subjectName))
             {
@@ -68,6 +68,10 @@ namespace Certify
             if (!String.IsNullOrEmpty(altName))
             {
                 Console.WriteLine($"[*] AltName                 : {altName}");
+            }
+            if (!String.IsNullOrEmpty(sidExtension))
+            {
+                Console.WriteLine($"[*] SidExtension            : {sidExtension}");
             }
 
             var privateKey = CreatePrivateKey(machineContext);
@@ -116,6 +120,15 @@ namespace Certify
                 var altNamePair = new CX509NameValuePair();
                 altNamePair.Initialize("SAN", $"upn={altName}");
                 objPkcs10.NameValuePairs.Add(altNamePair);
+
+                if(!String.IsNullOrEmpty(sidExtension)) {
+                    var extBytes = Certify.Lib.CertSidExtension.EncodeSidExtension(new SecurityIdentifier(sidExtension));
+                    var oid = new CObjectId();
+                    oid.InitializeFromValue("1.3.6.1.4.1.311.25.2");
+                    var sidExt = new CX509Extension();
+                    sidExt.Initialize(oid, EncodingType.XCN_CRYPT_STRING_BASE64, Convert.ToBase64String(extBytes));
+                    objPkcs10.X509Extensions.Add(sidExt);
+                }
             }
 
             var objEnroll = new CX509Enrollment();
@@ -300,19 +313,19 @@ namespace Certify
 
 
         // request a user/machine certificate
-        public static void RequestCert(string CA, bool machineContext = false, string templateName = "User", string subject = "", string altName = "", bool install = false)
+        public static void RequestCert(string CA, bool machineContext = false, string templateName = "User", string subject = "", string altName = "", string sidExtension = "", bool install = false)
         {
             if (machineContext && !WindowsIdentity.GetCurrent().IsSystem)
             {
                 Console.WriteLine("[*] Elevating to SYSTEM context for machine cert request");
-                Elevator.GetSystem(() => RequestCert(CA, machineContext, templateName, subject, altName, install));
+                Elevator.GetSystem(() => RequestCert(CA, machineContext, templateName, subject, altName, sidExtension, install));
                 return;
             }
 
             var userName = WindowsIdentity.GetCurrent().Name;
             Console.WriteLine($"\r\n[*] Current user context    : {userName}");
 
-            var csr = CreateCertRequestMessage(templateName, machineContext, subject, altName);
+            var csr = CreateCertRequestMessage(templateName, machineContext, subject, altName, sidExtension);
 
 
             Console.WriteLine($"\r\n[*] Certificate Authority   : {CA}");
