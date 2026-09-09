@@ -3,31 +3,57 @@ name: Release
 on:
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+"]
-    branches: ["main"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to embed in the preflight package (for example, v0.0.5)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
 
 jobs:
 
   linux-windows-build:
     name: CSharp Build
-    if: startsWith( github.ref, 'refs/tags/v')
-    runs-on: windows-2019
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    runs-on: windows-2022
     timeout-minutes: 45
     steps:
 
-    - name: Add msbuild to PATH
-      uses: microsoft/setup-msbuild@v1.1
-  
     - name: Check out code
-      uses: actions/checkout@v2
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        fetch-depth: 0
 
-    - name: Git Fetch Tags
-      run: git fetch --prune --unshallow --tags -f
+    - name: Add msbuild to PATH
+      uses: microsoft/setup-msbuild@30375c66a4eea26614e0d39710365f22f8b0af57 # v3
 
     - name: Download Tools
       run: |
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        Invoke-WebRequest -Uri https://github.com/stedolan/jq/releases/download/jq-1.6/jq-win64.exe -OutFile jq.exe
         Invoke-WebRequest -Uri https://github.com/moloch--/minisign/releases/download/v0.2.1/minisign.exe -OutFile minisign.exe
+        $ExpectedHash = "4D0A70881D057087D33F21D9B55F4CA2E41BD138D5ADED91FB06F80BAA0A0F17"
+        $ActualHash = (Get-FileHash -Algorithm SHA256 minisign.exe).Hash
+        if ($ActualHash -ne $ExpectedHash) {
+          throw "Unexpected minisign.exe SHA-256: $ActualHash"
+        }
+
+    - name: Resolve package version
+      id: version
+      env:
+        DISPATCH_VERSION: ${{ inputs.version }}
+      run: |
+        if ($env:GITHUB_REF_TYPE -eq "tag") {
+          $Version = $env:GITHUB_REF_NAME
+        } else {
+          $Version = $env:DISPATCH_VERSION
+        }
+        if ($Version -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') {
+          throw "Invalid package version: $Version"
+        }
+        "version=$Version" >> $env:GITHUB_OUTPUT
 
     - name: MSBuild
       run: |
@@ -36,28 +62,45 @@ jobs:
         Copy-Item -Path Certify\compiled\Certify.exe -Destination compiled\Certify.exe
 
     - name: Build Package
-      # Powershell is utter fucking trash.
+      env:
+        PACKAGE_VERSION: ${{ steps.version.outputs.version }}
       run: |
-        $Version = git.exe describe --tags --abbrev=0
-        Get-Content -Path alias.json | .\jq.exe --arg ver "$Version" '.version |= $ver' > ./compiled/alias.json
+        $Manifest = Get-Content -Raw -Path alias.json | ConvertFrom-Json
+        $Manifest.version = $env:PACKAGE_VERSION
+        $Manifest | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8 -Path ./compiled/alias.json
+        if ((Get-Content -Raw ./compiled/alias.json | ConvertFrom-Json).version -ne $env:PACKAGE_VERSION) {
+          throw "Package manifest version does not match $env:PACKAGE_VERSION"
+        }
         Copy-Item -Path LICENSE -Destination compiled\LICENSE
         cd compiled
         ls
         tar.exe -czvf ..\certify.tar.gz .
       
     - name: Sign Package
+      env:
+        MINISIGN_PRIVATE_KEY: ${{ secrets.MINISIGN_PRIVATE_KEY }}
       run: |
-        Write-Output "${{ secrets.MINISIGN_PRIVATE_KEY }}" > minisign.key
-        $Content1 = Get-Content -Path ./compiled/alias.json
-        $Bytes = [System.Text.Encoding]::UTF8.GetBytes($Content1)
+        Set-Content -Path minisign.key -Value $env:MINISIGN_PRIVATE_KEY
+        $Content = Get-Content -Raw -Path ./compiled/alias.json
+        $Bytes = [System.Text.Encoding]::UTF8.GetBytes($Content)
         $Encoded = [System.Convert]::ToBase64String($Bytes)
-        .\minisign.exe -s minisign.key -S -m certify.tar.gz -t "$Encoded" -x certify.minisig
+        try {
+          .\minisign.exe -s minisign.key -S -m certify.tar.gz -t "$Encoded" -x certify.minisig
+        } finally {
+          Remove-Item -Force -ErrorAction SilentlyContinue minisign.key
+        }
 
-    - name: "Publish Release"
-      uses: "marvinpinto/action-automatic-releases@latest"
+    - name: Upload package artifact
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
-        repo_token: "${{ secrets.GITHUB_TOKEN }}"
-        prerelease: false
-        files: |
+        name: certify-${{ steps.version.outputs.version }}
+        path: |
           certify.minisig
           certify.tar.gz
+        if-no-files-found: error
+
+    - name: Publish Release
+      if: startsWith(github.ref, 'refs/tags/v')
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: gh release create $env:GITHUB_REF_NAME certify.minisig certify.tar.gz --verify-tag --title $env:GITHUB_REF_NAME --generate-notes
