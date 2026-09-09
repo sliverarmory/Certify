@@ -77,15 +77,14 @@ jobs:
         tar.exe -czvf ..\certify.tar.gz .
       
     - name: Sign Package
-      env:
-        MINISIGN_PRIVATE_KEY: ${{ secrets.MINISIGN_PRIVATE_KEY }}
       run: |
-        Set-Content -Path minisign.key -Value $env:MINISIGN_PRIVATE_KEY
+        Write-Output "${{ secrets.MINISIGN_PRIVATE_KEY }}" > minisign.key
         $Content = Get-Content -Raw -Path ./compiled/alias.json
         $Bytes = [System.Text.Encoding]::UTF8.GetBytes($Content)
         $Encoded = [System.Convert]::ToBase64String($Bytes)
         try {
           .\minisign.exe -s minisign.key -S -m certify.tar.gz -t "$Encoded" -x certify.minisig
+          .\minisign.exe -Vm certify.tar.gz -x certify.minisig -P "RWSuThUM+rbkd/D0mZoP+xOb8REbKzPYlb0bgvriH4AduO/bI0ZGC+U4"
         } finally {
           Remove-Item -Force -ErrorAction SilentlyContinue minisign.key
         }
@@ -103,4 +102,4 @@ jobs:
       if: startsWith(github.ref, 'refs/tags/v')
       env:
         GH_TOKEN: ${{ github.token }}
-      run: gh release create $env:GITHUB_REF_NAME certify.minisig certify.tar.gz --verify-tag --title $env:GITHUB_REF_NAME --generate-notes
+      run: gh release create $env:GITHUB_REF_NAME certify.minisig certify.tar.gz --verify-tag --fail-on-no-commits --title $env:GITHUB_REF_NAME --generate-notes
